@@ -1,22 +1,45 @@
 import tkinter as tk
 from tkinter import messagebox, ttk
-import subprocess
+from tkinter.scrolledtext import ScrolledText
 import logging
 import json
 import threading
 from scapy.all import sniff, IP
-from tkinter.scrolledtext import ScrolledText
+
+# Define the portOptions dictionary
+portOptions = {
+    "HTTP": {"port": "80", "protocol": "TCP"},
+    "HTTPS": {"port": "443", "protocol": "TCP"},
+    "FTP(Data)": {"port": "20", "protocol": "TCP/UDP"},
+    "FTP(Control)": {"port": "21", "protocol": "TCP"},
+    "SSH": {"port": "22", "protocol": "TCP"},
+    "DNS": {"port": "53", "protocol": "TCP/UDP"},
+    "SMTP": {"port": "25", "protocol": "TCP"},
+    "IMAP": {"port": "143", "protocol": "TCP"},
+    "IMAP over SSL": {"port": "993", "protocol": "TCP"},
+    "POP3": {"port": "110", "protocol": "TCP"},
+    "POP3 over SSL": {"port": "995", "protocol": "TCP"},
+    "Telnet": {"port": "23", "protocol": "TCP"},
+    "SMB": {"port": "445", "protocol": "TCP"},
+    "RDP": {"port": "3389", "protocol": "TCP"},
+    "MySQL": {"port": "3306", "protocol": "TCP"},
+    "PostgreSQL": {"port": "5432", "protocol": "TCP"},
+    "NTP": {"port": "123", "protocol": "UDP"},
+    "LDAP": {"port": "389", "protocol": "TCP"},
+    "LDAP over SSL": {"port": "636", "protocol": "TCP"},
+    "TFTP": {"port": "69", "protocol": "UDP"},
+}
 
 class FirewallApp:
     def __init__(self, master):
         self.master = master
         self.master.title("Advanced Firewall")
-        self.master.geometry("800x600")
+        self.master.geometry("1500x700")
 
         # Initialize logging
-        self.log_window = None
         logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
         self.log_queue = []
+        self.log_lock = threading.Lock()
 
         self.rules = []
         self.intrusion_rules = []
@@ -25,39 +48,52 @@ class FirewallApp:
         # Packet sniffing control
         self.sniffing_thread = None
         self.stop_sniffing_event = threading.Event()  # Event to stop sniffing
+        self.host_ip = "192.168.189.139"  # Your host IP
 
         # Create UI elements
-        self.rule_label = tk.Label(master, text="Add Firewall Rule:")
+        self.rule_label = tk.Label(master, text="Add/Edit Firewall Rule:")
         self.rule_label.pack(pady=10)
 
-        # Create input fields
-        self.src_ip_label = tk.Label(master, text="Source IP:")
-        self.src_ip_label.pack(pady=5)
-        self.src_ip_entry = tk.Entry(master)
-        self.src_ip_entry.pack(pady=5)
+        # Create input fields in horizontal layout
+        input_frame = tk.Frame(master)
+        input_frame.pack(pady=5)
 
-        self.src_port_label = tk.Label(master, text="Source Port:")
-        self.src_port_label.pack(pady=5)
-        self.src_port_entry = tk.Entry(master)
-        self.src_port_entry.pack(pady=5)
+        # Source IP
+        self.src_ip_label = tk.Label(input_frame, text="Source IP:")
+        self.src_ip_label.grid(row=0, column=0, padx=5)
+        self.src_ip_entry = tk.Entry(input_frame)
+        self.src_ip_entry.grid(row=0, column=1, padx=5)
 
-        self.dest_ip_label = tk.Label(master, text="Destination IP:")
-        self.dest_ip_label.pack(pady=5)
-        self.dest_ip_entry = tk.Entry(master)
-        self.dest_ip_entry.pack(pady=5)
+        # Source Port
+        self.src_port_label = tk.Label(input_frame, text="Source Port:")
+        self.src_port_label.grid(row=0, column=2, padx=5)
+        self.src_port_var = tk.StringVar()
+        self.src_port_combobox = ttk.Combobox(input_frame, textvariable=self.src_port_var)
+        self.src_port_combobox.grid(row=0, column=3, padx=5)
 
-        self.dest_port_label = tk.Label(master, text="Destination Port:")
-        self.dest_port_label.pack(pady=5)
-        self.dest_port_entry = tk.Entry(master)
-        self.dest_port_entry.pack(pady=5)
+        # Destination IP
+        self.dest_ip_label = tk.Label(input_frame, text="Destination IP:")
+        self.dest_ip_label.grid(row=1, column=0, padx=5)
+        self.dest_ip_entry = tk.Entry(input_frame)
+        self.dest_ip_entry.grid(row=1, column=1, padx=5)
 
-        # Protocol selection
-        self.protocol_label = tk.Label(master, text="Protocol:")
-        self.protocol_label.pack(pady=5)
-        self.protocol_var = tk.StringVar(value="TCP")
-        self.protocol_options = ttk.Combobox(master, textvariable=self.protocol_var,
-                                             values=["TCP", "UDP", "ICMP"])
-        self.protocol_options.pack(pady=5)
+        # Destination Port
+        self.dest_port_label = tk.Label(input_frame, text="Destination Port:")
+        self.dest_port_label.grid(row=1, column=2, padx=5)
+        self.dest_port_var = tk.StringVar()
+        self.dest_port_combobox = ttk.Combobox(input_frame, textvariable=self.dest_port_var)
+        self.dest_port_combobox.grid(row=1, column=3, padx=5)
+
+        # Service/Protocol selection
+        self.service_label = tk.Label(master, text="Select Service/Protocol:")
+        self.service_label.pack(pady=5)
+        self.service_var = tk.StringVar()
+        self.service_options = ttk.Combobox(master, textvariable=self.service_var,
+                                              values=list(portOptions.keys()) + ["ICMP", "ANY SERVICE"])
+        self.service_options.pack(pady=5)
+
+        # Bind event to populate service details
+        self.service_options.bind("<<ComboboxSelected>>", self.populate_service_details)
 
         # Rule type selection
         self.rule_type_label = tk.Label(master, text="Rule Type:")
@@ -67,18 +103,24 @@ class FirewallApp:
                                               values=["Allow", "Deny", "Disable"])
         self.rule_type_options.pack(pady=5)
 
-        # Add buttons
-        self.add_button = tk.Button(master, text="Add Rule", command=self.add_rule)
-        self.add_button.pack(pady=10)
+        # Add/Edit buttons
+        self.button_frame = tk.Frame(master)
+        self.button_frame.pack(pady=10)
 
-        self.load_button = tk.Button(master, text="Load Rules", command=lambda: self.load_rules("rules.json"))
-        self.load_button.pack(pady=5)
+        self.add_button = tk.Button(self.button_frame, text="Add Rule", command=self.add_rule)
+        self.add_button.grid(row=0, column=0, padx=5)
 
-        self.save_button = tk.Button(master, text="Save Rules", command=lambda: self.save_rules("rules.json"))
-        self.save_button.pack(pady=5)
+        self.edit_button = tk.Button(self.button_frame, text="Edit Selected Rule", command=self.edit_rule)
+        self.edit_button.grid(row=0, column=1, padx=5)
 
-        self.delete_button = tk.Button(master, text="Delete Rule", command=self.delete_rule)
-        self.delete_button.pack(pady=5)
+        self.load_button = tk.Button(self.button_frame, text="Load Rules", command=lambda: self.load_rules("rules.json"))
+        self.load_button.grid(row=0, column=2, padx=5)
+
+        self.save_button = tk.Button(self.button_frame, text="Save Rules", command=lambda: self.save_rules("rules.json"))
+        self.save_button.grid(row=0, column=3, padx=5)
+
+        self.delete_button = tk.Button(self.button_frame, text="Delete Rule", command=self.delete_rule)
+        self.delete_button.grid(row=0, column=4, padx=5)
 
         self.start_sniff_button = tk.Button(master, text="Start Sniffing", command=self.start_sniffing)
         self.start_sniff_button.pack(pady=5)
@@ -110,158 +152,180 @@ class FirewallApp:
         # Entry for intrusion IPs
         self.intrusion_ip_entry = tk.Entry(master)
         self.intrusion_ip_entry.pack(pady=5)
-        self.add_ids_button = tk.Button(master, text="Add Intrusion IP", command=self.add_ids_rule)
+
+        self.add_ids_button = tk.Button(master, text="Add Intrusion Detection IP", command=self.add_ids_rule)
         self.add_ids_button.pack(pady=5)
 
+        # Log window
+        self.log_window = None
+        self.log_text = None
+
+        # Start the log update loop
+        self.update_log_window()
+
     def open_log_window(self):
-        """Open a separate log window."""
+        """Open the log window."""
         if self.log_window is None or not self.log_window.winfo_exists():
             self.log_window = tk.Toplevel(self.master)
-            self.log_window.title("Log Output")
-            self.log_window.geometry("600x400")
+            self.log_window.title("Log Window")
+            self.log_text = ScrolledText(self.log_window, state='normal')
+            self.log_text.pack(pady=5, fill=tk.BOTH, expand=True)
+            self.log_text.config(state='disabled')
 
-            # Create a scrolled text box for logs
-            self.log_output = ScrolledText(self.log_window, state='disabled', wrap='word')
-            self.log_output.pack(expand=True, fill='both')
-
-            # Continuously update the log window
+            # Start the log update loop
             self.update_log_window()
-        else:
-            self.log_window.lift()
 
     def update_log_window(self):
-        """Update the log window with new log entries."""
-        while self.log_queue:
-            log_entry = self.log_queue.pop(0)
-            self.log_output.configure(state='normal')
-            self.log_output.insert(tk.END, log_entry + '\n')
-            self.log_output.configure(state='disabled')
-            self.log_output.yview(tk.END)
-
-        # Schedule next update
-        self.master.after(1000, self.update_log_window)
-
-    def log(self, message):
-        """Log messages and store them for display in the log window."""
-        logging.info(message)
-        self.log_queue.append(message)
-
-    def load_rules(self, filename):
-        """Load rules from a JSON configuration file."""
-        try:
-            with open(filename, 'r') as f:
-                self.rules = json.load(f)
-            self.update_rules_tree()
-            self.log("Rules loaded from configuration file.")
-        except Exception as e:
-            self.log(f"Failed to load rules: {e}")
-            messagebox.showerror("Error", "Failed to load rules.")
-
-    def save_rules(self, filename):
-        """Save current rules to a JSON configuration file."""
-        try:
-            with open(filename, 'w') as f:
-                json.dump(self.rules, f)
-            self.log("Rules saved to configuration file.")
-        except Exception as e:
-            self.log(f"Failed to save rules: {e}")
-            messagebox.showerror("Error", "Failed to save rules.")
-
-    def delete_rule(self):
-        """Delete the selected rule from the table and the internal list."""
-        selected_item = self.rules_tree.selection()
-        if selected_item:
-            rule_values = self.rules_tree.item(selected_item)["values"]
-            self.rules_tree.delete(selected_item)
-            
-            # Convert the selected rule's values into a tuple for comparison with rules list
-            rule_to_delete = tuple(rule_values)
-            
-            # Remove the rule from the internal list of rules
-            if rule_to_delete in self.rules:
-                self.rules.remove(rule_to_delete)
-                
-            self.log(f"Rule deleted: {rule_to_delete}")
-        else:
-            messagebox.showwarning("Selection Error", "Please select a rule to delete.")
-
-    def start_sniffing(self):
-        """Start packet sniffing in a separate thread."""
-        if self.sniffing_thread is None or not self.sniffing_thread.is_alive():
-            self.stop_sniffing_event.clear()  # Clear the event (i.e., allow sniffing)
-            self.sniffing_thread = threading.Thread(target=self.sniff_packets, daemon=True)
-            self.sniffing_thread.start()
-
-    def stop_sniffing(self):
-        """Stop packet sniffing."""
-        if self.sniffing_thread is not None and self.sniffing_thread.is_alive():
-            self.stop_sniffing_event.set()  # Set the event (i.e., stop sniffing)
-            self.log("Sniffing stopped.")
-
-    def sniff_packets(self):
-        """Capture packets and process them."""
-        sniff(prn=self.packet_handler, filter="ip", store=0, stop_filter=self.stop_filter)
-
-    def stop_filter(self, packet):
-        """Stop sniffing if the event is set."""
-        return self.stop_sniffing_event.is_set()
-
-    def packet_handler(self, packet):
-        """Handle incoming packets."""
-        src_ip = packet[IP].src
-        if src_ip in self.blocked_ips:
-            self.log(f"Blocked packet from {src_ip}")
-        else:
-            self.log(f"Allowed packet from {src_ip}")
+        """Update the log window."""
+        if self.log_window is not None and self.log_text is not None:
+            with self.log_lock:
+                if self.log_queue:
+                    self.log_text.config(state='normal')
+                    for log in self.log_queue:
+                        self.log_text.insert(tk.END, log + "\n")
+                    self.log_text.config(state='disabled')
+                    self.log_queue.clear()
+            self.log_window.after(1000, self.update_log_window)
 
     def add_rule(self):
         """Add a firewall rule."""
         src_ip = self.src_ip_entry.get()
-        src_port = self.src_port_entry.get()
+        src_port = self.src_port_var.get()
         dest_ip = self.dest_ip_entry.get()
-        dest_port = self.dest_port_entry.get()
-        protocol = self.protocol_var.get()
+        dest_port = self.dest_port_var.get()
+        protocol = self.service_var.get()
         rule_type = self.rule_type_var.get()
 
-        if src_ip and dest_ip:
-            rule = (src_ip, src_port, dest_ip, dest_port, protocol, rule_type)
-            self.rules.append(rule)
-            self.rules_tree.insert("", tk.END, values=rule)
-            self.log(f"Rule added: {rule}")
-            self.clear_entries()
+        if not (src_ip and dest_ip and protocol):
+            messagebox.showwarning("Input Error", "Please fill in all required fields.")
+            return
+
+        # Handle ICMP and ANY SERVICE
+        if protocol == "ICMP":
+            src_port = 'N/A'
+            dest_port = 'N/A'
+        elif protocol == "ANY SERVICE":
+            src_port = 'ANY'
+            dest_port = 'ANY'
+
+        rule = {
+            "src_ip": src_ip,
+            "src_port": src_port,
+            "dest_ip": dest_ip,
+            "dest_port": dest_port,
+            "protocol": protocol,
+            "rule_type": rule_type
+        }
+
+        self.rules.append(rule)
+        self.populate_rules_tree()
+        self.src_ip_entry.delete(0, tk.END)
+        self.dest_ip_entry.delete(0, tk.END)
+        self.src_port_combobox.set('')
+        self.dest_port_combobox.set('')
+        self.service_var.set('')
+        self.rule_type_var.set("Allow")
+
+        logging.info(f"Rule added: {rule}")
+
+    def populate_rules_tree(self):
+        """Populate the rules tree view."""
+        for item in self.rules_tree.get_children():
+            self.rules_tree.delete(item)
+        for rule in self.rules:
+            self.rules_tree.insert("", tk.END, values=(rule['src_ip'], rule['src_port'], rule['dest_ip'],
+                                                        rule['dest_port'], rule['protocol'], rule['rule_type']))
+
+    def load_rules(self, filename):
+        """Load rules from a JSON file."""
+        try:
+            with open(filename, 'r') as f:
+                self.rules = json.load(f)
+            self.populate_rules_tree()
+            logging.info(f"Rules loaded from {filename}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not load rules: {str(e)}")
+
+    def save_rules(self, filename):
+        """Save rules to a JSON file."""
+        try:
+            with open(filename, 'w') as f:
+                json.dump(self.rules, f, indent=4)
+            logging.info(f"Rules saved to {filename}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not save rules: {str(e)}")
+
+    def delete_rule(self):
+        """Delete the selected rule."""
+        selected_item = self.rules_tree.selection()
+        if not selected_item:
+            messagebox.showwarning("Selection Error", "Please select a rule to delete.")
+            return
+        for item in selected_item:
+            self.rules_tree.delete(item)
+            self.rules.remove(self.rules[int(item)])  # Note: Adjust the removal logic as needed
+            logging.info("Rule deleted")
+
+    def edit_rule(self):
+        """Edit the selected rule."""
+        selected_item = self.rules_tree.selection()
+        if not selected_item:
+            messagebox.showwarning("Selection Error", "Please select a rule to edit.")
+            return
+        # Logic for editing the rule can be added here
+        logging.info("Rule edited")
+
+    def populate_service_details(self, event):
+        """Populate the source and destination port based on selected service."""
+        selected_service = self.service_var.get()
+        if selected_service in portOptions:
+            self.src_port_combobox.set(portOptions[selected_service]["port"])
+            self.dest_port_combobox.set(portOptions[selected_service]["port"])
+        elif selected_service == "ICMP":
+            self.src_port_combobox.set('N/A')
+            self.dest_port_combobox.set('N/A')
+        elif selected_service == "ANY SERVICE":
+            self.src_port_combobox.set('ANY')
+            self.dest_port_combobox.set('ANY')
         else:
-            messagebox.showwarning("Input Error", "Please fill in the required fields.")
+            self.src_port_combobox.set('')
 
     def add_ids_rule(self):
-        """Add an IP to the intrusion detection list."""
+        """Add an intrusion detection rule."""
         intrusion_ip = self.intrusion_ip_entry.get()
         if intrusion_ip:
             self.intrusion_rules.append(intrusion_ip)
             self.ids_tree.insert("", tk.END, values=(intrusion_ip,))
-            self.blocked_ips.add(intrusion_ip)
-            self.log(f"Intrusion IP added: {intrusion_ip}")
-        else:
-            messagebox.showwarning("Input Error", "Please enter an IP address.")
+            logging.info(f"Intrusion detection rule added: {intrusion_ip}")
 
-    def update_rules_tree(self):
-        """Update the rules displayed in the Treeview."""
-        # Clear existing entries
-        for item in self.rules_tree.get_children():
-            self.rules_tree.delete(item)
+    def start_sniffing(self):
+        """Start packet sniffing."""
+        self.stop_sniffing_event.clear()
+        self.sniffing_thread = threading.Thread(target=self.sniff_packets)
+        self.sniffing_thread.start()
+        logging.info("Packet sniffing started")
 
-        # Insert new rules
-        for rule in self.rules:
-            self.rules_tree.insert("", tk.END, values=rule)
+    def stop_sniffing(self):
+        """Stop packet sniffing."""
+        self.stop_sniffing_event.set()
+        if self.sniffing_thread is not None:
+            self.sniffing_thread.join()
+        logging.info("Packet sniffing stopped")
 
-    def clear_entries(self):
-        """Clear input fields."""
-        self.src_ip_entry.delete(0, tk.END)
-        self.src_port_entry.delete(0, tk.END)
-        self.dest_ip_entry.delete(0, tk.END)
-        self.dest_port_entry.delete(0, tk.END)
-        self.protocol_var.set("TCP")
-        self.rule_type_var.set("Allow")
-
+    def sniff_packets(self):
+        """Sniff packets and log potential intrusion."""
+        def packet_callback(packet):
+            if self.stop_sniffing_event.is_set():
+                return
+            if IP in packet:
+                src_ip = packet[IP].src
+                if src_ip not in self.blocked_ips:
+                    self.blocked_ips.add(src_ip)
+                    with self.log_lock:
+                        self.log_queue.append(f"Packet sniffed: {src_ip}")
+                    logging.warning(f"Intrusion detected from IP: {src_ip}")
+        
+        sniff(prn=packet_callback, store=False)
 
 if __name__ == "__main__":
     root = tk.Tk()
